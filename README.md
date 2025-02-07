@@ -64,12 +64,8 @@ A Solidity smart contract for managing AI model versioning with granular access 
 4. Submit a Pull Request
 
 ## Roadmap 🗺️
-- [ ] IPFS integration for model data
 - [ ] Web3.js/React demo interface
-- [ ] Multi-signature support
-- [ ] DAO-based governance
 - [ ] Model training metadata support
-- [ ] Federated learning integration
 
 ## License 📄
 MIT License - See [LICENSE](LICENSE) for details.
