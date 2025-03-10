@@ -1,117 +1,166 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.20;
 
-contract EternacodeAI {
-    address public owner;
+contract TextStorage {
+    struct Version {
+        string text;
+        uint256 modifiedAt;
+    }
     
-    struct AIModelVersion {
-        string content;
-        uint256 timestamp;
-        address author; // Nuevo campo para rastrear al autor
+    struct TextEntry {
+        string currentText;
+        uint256 createdAt;
+        uint256 updatedAt;
+        Version[] versions;
+        mapping(address => bool) allowedViewers;
     }
 
+    struct AccessibleEntry {
+        address owner;
+        string name;
+        string currentText;
+        uint256 createdAt;
+        uint256 updatedAt;
+    }
+    
     // Mapeos principales
-    mapping(uint256 => AIModelVersion[]) private idToVersions;
-    mapping(uint256 => mapping(address => bool)) private permissions;
+    mapping(address => mapping(string => TextEntry)) private _entries;
+    mapping(address => string[]) private _userEntries; // Entradas propias
+    mapping(address => AccessibleEntry[]) private _allowedEntries; // Entradas compartidas con el usuario
+
+    // Eventos
+    event EntryCreated(address indexed user, string name, uint256 timestamp);
+    event EntryUpdated(address indexed user, string name, uint256 timestamp);
+    event PermissionGranted(address indexed user, string name, address viewer);
+    event PermissionRevoked(address indexed user, string name, address viewer);
     
-    // Nuevas estructuras para el tracking de últimas versiones
-    mapping(uint256 => address) public idToLatestAuthor;
-    uint256[] private allIds; // Lista de todos los IDs existentes
-
-    event VersionAdded(uint256 indexed id, address indexed author, uint256 timestamp);
-    event PermissionGranted(uint256 indexed id, address indexed wallet);
-    event PermissionRevoked(uint256 indexed id, address indexed wallet);
-
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner can call this");
-        _;
-    }
-
-    modifier hasPermission(uint256 id) {
-        require(
-            msg.sender == owner || permissions[id][msg.sender],
-            "No permissions for this ID"
-        );
-        _;
-    }
-
-    constructor() {
-        owner = msg.sender;
-    }
-
-    // ================== FUNCIONES PRINCIPALES ==================
-    function addVersion(uint256 id, string memory text) public hasPermission(id) {
-        if (idToVersions[id].length == 0) {
-            allIds.push(id); // Registrar nuevo ID
-        }
+    // Función MODIFICADA para llevar registro de entradas propias
+    function createEntry(string memory name, string memory text) external {
+        require(bytes(name).length > 0, "Nombre vacio");
+        require(_entries[msg.sender][name].createdAt == 0, "Entrada existente");
         
-        idToVersions[id].push(AIModelVersion({
-            content: text,
-            timestamp: block.timestamp,
-            author: msg.sender
-        }));
+        TextEntry storage newEntry = _entries[msg.sender][name];
+        newEntry.currentText = text;
+        newEntry.createdAt = block.timestamp;
+        newEntry.updatedAt = block.timestamp;
+        newEntry.versions.push(Version(text, block.timestamp));
         
-        idToLatestAuthor[id] = msg.sender; // Actualizar último autor
-        emit VersionAdded(id, msg.sender, block.timestamp);
+        _userEntries[msg.sender].push(name); // Registrar entrada propia
+        emit EntryCreated(msg.sender, name, block.timestamp);
     }
 
-    // ================== FUNCIONES DE CONSULTA ==================
-    // Obtener las últimas N versiones de un ID (pagina hacia atrás)
-    function getVersionsPaginated(uint256 id, uint256 count) public view hasPermission(id) returns (AIModelVersion[] memory) {
-        uint256 total = idToVersions[id].length;
-        uint256 size = (count > total) ? total : count;
+    function updateEntry(string memory name, string memory newText) external {
+        TextEntry storage entry = _entries[msg.sender][name];
+        require(entry.createdAt != 0, "Entrada no existe");
         
-        AIModelVersion[] memory result = new AIModelVersion[](size);
-        for (uint256 i = 0; i < size; i++) {
-            result[i] = idToVersions[id][total - 1 - i];
-        }
-        return result;
-    }
-
-    // Obtener una versión específica por índice
-    function getVersion(uint256 id, uint256 index) public view hasPermission(id) returns (AIModelVersion memory) {
-        require(index < idToVersions[id].length, "Invalid version index");
-        return idToVersions[id][index];
-    }
-
-    // Obtener la última versión de un ID
-    function getLatestVersion(uint256 id) public view hasPermission(id) returns (AIModelVersion memory) {
-        require(idToVersions[id].length > 0, "No versions exist");
-        return idToVersions[id][idToVersions[id].length - 1];
-    }
-
-    // Obtener todos los IDs donde el usuario es autor de la última versión
-    function getUserLatestIds(address user) public view returns (uint256[] memory) {
-        uint256[] memory temp = new uint256[](allIds.length);
-        uint256 counter = 0;
+        entry.currentText = newText;
+        entry.updatedAt = block.timestamp;
+        entry.versions.push(Version(newText, block.timestamp));
         
-        for (uint256 i = 0; i < allIds.length; i++) {
-            uint256 id = allIds[i];
-            if (idToLatestAuthor[id] == user) {
-                temp[counter] = id;
-                counter++;
+        emit EntryUpdated(msg.sender, name, block.timestamp);
+    }
+
+    // Funciones MODIFICADAS para manejar permisos y registros compartidos
+    function grantPermission(string memory name, address viewer) external {
+        require(_entries[msg.sender][name].createdAt != 0, "Entrada no existe");
+        _entries[msg.sender][name].allowedViewers[viewer] = true;
+        
+        // Añadir a la lista de entradas accesibles del viewer
+        TextEntry storage entry = _entries[msg.sender][name];
+        _allowedEntries[viewer].push(AccessibleEntry(
+            msg.sender,
+            name,
+            entry.currentText,
+            entry.createdAt,
+            entry.updatedAt
+        ));
+        
+        emit PermissionGranted(msg.sender, name, viewer);
+    }
+
+    function revokePermission(string memory name, address viewer) external {
+        delete _entries[msg.sender][name].allowedViewers[viewer];
+        
+        // Remover de la lista de entradas accesibles del viewer
+        AccessibleEntry[] storage entries = _allowedEntries[viewer];
+        for(uint256 i = 0; i < entries.length; i++) {
+            if(entries[i].owner == msg.sender && 
+               keccak256(bytes(entries[i].name)) == keccak256(bytes(name))) {
+                entries[i] = entries[entries.length - 1];
+                entries.pop();
+                break;
             }
         }
         
-        uint256[] memory result = new uint256[](counter);
-        for (uint256 i = 0; i < counter; i++) {
-            result[i] = temp[i];
+        emit PermissionRevoked(msg.sender, name, viewer);
+    }
+
+    // NUEVA FUNCIÓN: Obtener todas las entradas accesibles
+    function getAccessibleEntries() external view returns (AccessibleEntry[] memory, AccessibleEntry[] memory) {
+        // Entradas propias
+        string[] storage ownEntries = _userEntries[msg.sender];
+        AccessibleEntry[] memory ownResult = new AccessibleEntry[](ownEntries.length);
+        
+        for(uint256 i = 0; i < ownEntries.length; i++) {
+            TextEntry storage entry = _entries[msg.sender][ownEntries[i]];
+            ownResult[i] = AccessibleEntry(
+                msg.sender,
+                ownEntries[i],
+                entry.currentText,
+                entry.createdAt,
+                entry.updatedAt
+            );
+        }
+        
+        // Entradas compartidas con el usuario
+        AccessibleEntry[] storage sharedEntries = _allowedEntries[msg.sender];
+        
+        return (ownResult, sharedEntries);
+    }
+
+    function getCurrentText(address user, string memory name) external view returns (
+        string memory text,
+        uint256 createdAt,
+        uint256 updatedAt
+    ) {
+        TextEntry storage entry = _entries[user][name];
+        _checkPermissions(user, name);
+        return (entry.currentText, entry.createdAt, entry.updatedAt);
+    }
+
+    function getVersionCount(address user, string memory name) external view returns (uint256) {
+        _checkPermissions(user, name);
+        return _entries[user][name].versions.length;
+    }
+
+    function getSpecificVersion(address user, string memory name, uint256 index) external view returns (
+        string memory text,
+        uint256 modifiedAt
+    ) {
+        _checkPermissions(user, name);
+        Version storage version = _entries[user][name].versions[index];
+        return (version.text, version.modifiedAt);
+    }
+
+    function getRecentVersions(address user, string memory name, uint256 count) external view returns (Version[] memory) {
+        _checkPermissions(user, name);
+        Version[] storage allVersions = _entries[user][name].versions;
+        uint256 start = allVersions.length > count ? allVersions.length - count : 0;
+        
+        Version[] memory result = new Version[](allVersions.length - start);
+        for(uint256 i = start; i < allVersions.length; i++) {
+            result[i - start] = allVersions[i];
         }
         return result;
     }
 
-    // ================== FUNCIONES DE PERMISOS ==================
-    function grantPermission(uint256 id, address wallet) public onlyOwner {
-        permissions[id][wallet] = true;
-        emit PermissionGranted(id, wallet);
-    }
-
-    function revokePermission(uint256 id, address wallet) public onlyOwner {
-        permissions[id][wallet] = false;
-        emit PermissionRevoked(id, wallet);
-    }
-
-    function checkPermission(uint256 id, address wallet) public view returns (bool) {
-        return wallet == owner || permissions[id][wallet];
+    // Verificación de permisos interna
+    function _checkPermissions(address user, string memory name) private view {
+        require(_entries[user][name].createdAt != 0, "Entrada no existe");
+        require(
+            user == msg.sender || 
+            _entries[user][name].allowedViewers[msg.sender],
+            "Sin permisos"
+        );
     }
 }
